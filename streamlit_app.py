@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # ==========================================================
 # 1. 移动端与界面配置 (MOBILE & INTERFACE CONFIGURATION)
@@ -14,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 彻底隐藏开发人员菜单、页眉、页脚以及右下角的 Manage App 按钮 (全屏体验)
+# 彻底隐藏开发人员菜单、页眉、页脚 (全屏看护体验)
 hide_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -27,13 +28,15 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 # ==========================================================
-# 2. API 密钥配置验证 (API KEY VERIFICATION)
+# 2. 新版 API 客户端配置验证 (NEW GENAI CLIENT INITIALIZATION)
 # ==========================================================
+client = None
 if "GEMINI_API_KEY" in st.secrets:
     try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        # 使用 Google 2026 最新官方标准客户端初始化
+        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
     except Exception as e:
-        st.error(f"遭遇接口配置错误: {e}")
+        st.error(f"AI 接口初始化失败: {e}")
 else:
     st.warning("⚠️ 未检测到 API 密钥，AI 动态报告生成功能暂未启用。请在 Streamlit Secrets 中配置 GEMINI_API_KEY。")
 
@@ -59,9 +62,12 @@ except Exception as e:
     df_alerts = pd.DataFrame(columns=['Date', 'Type', 'Message'])
 
 # ==========================================================
-# 4. AI 动态医疗指南报告生成器 (AI RAG ENGINE WITH SEARCH)
+# 4. 新版 AI 动态医疗报告生成器 (UPGRADED AI SEARCH ENGINE)
 # ==========================================================
 def generate_ai_report(latest_metrics, weight_loss_pct):
+    if client is None:
+        return "🚨 AI 客户端未就绪，无法生成动态报告。"
+
     context = f"""
     患者状态背景：
     - 放疗类型：口腔癌放疗 (Stage 1-2 Oral Cancer)
@@ -97,11 +103,14 @@ def generate_ai_report(latest_metrics, weight_loss_pct):
     [列出家属今明两天需要严密监控的危险症状，一旦超过必须立即联系主管医生或看护护士]
     """
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            tools=[{"google_search_retrieval": {}}] # 开启实时医学数据库检索
+        # 换用新版 SDK 联网搜索生成语法
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())] # 开启谷歌官方实时医学检索功能
+            )
         )
-        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"🚨 今日基础数据已成功保存。但由于远程医学指南数据库连接超时，动态AI预测暂不可用。请参照趋势看板和医院下发的纸质医嘱核对指标。"
@@ -146,3 +155,130 @@ with tab1:
         st.markdown("---")
         notes = st.text_area("日常备注 (例如：吃了什么、心情、特殊情况等)")
         submit = st.form_submit_button("💾 保存并生成今日报告", use_container_width=True)
+
+    if submit:
+        current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 计算过去 7 天体重变化趋势
+        weight_loss_pct = 0.0
+        if not df.empty:
+            one_week_ago = datetime.now() - timedelta(days=7)
+            past_entries = df[df['Date'] <= one_week_ago]
+            if not past_entries.empty:
+                baseline_weight = float(past_entries['Weight'].iloc[-1])
+                weight_loss_pct = ((baseline_weight - float(weight)) / baseline_weight) * 100
+
+        # 构建新打卡记录
+        new_entry = pd.DataFrame([{
+            'Date': current_time_str, 'Weight': float(weight), 'Fluids': int(fluids),
+            'Dose': float(dose), 'Pain': int(pain), 'Saliva': int(saliva), 'Notes': str(notes)
+        }])
+        
+        report_metrics = {'Weight': weight, 'Fluids': fluids, 'Dose': dose, 'Pain': pain, 'Saliva': saliva, 'Notes': notes}
+        
+        # 预清理历史数据的 Date 格式
+        if not df.empty:
+            df['Date'] = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+        # 合并并转换格式为纯文本，彻底防范类型解析崩溃
+        updated_df = pd.concat([df, new_entry], ignore_index=True)
+        updated_df = updated_df.astype(str)
+        
+        # 保存主打卡记录至 Google Sheets
+        conn.update(worksheet="Log", data=updated_df)
+        
+        # 静态警报档案建立
+        new_alerts = []
+        if weight_loss_pct >= 2.0:
+            new_alerts.append({'Date': current_time_str, 'Type': '🚨 体重危机', 'Message': f'体重周下滑{weight_loss_pct:.1f}%。'})
+        if fluids < 1500:
+            new_alerts.append({'Date': current_time_str, 'Type': '💧 饮水不足', 'Message': f'饮水量仅{fluids}mL，跌破安全线。'})
+        if pain >= 7:
+            new_alerts.append({'Date': current_time_str, 'Type': '🛑 重度疼痛', 'Message': f'咽喉疼痛剧烈达到{pain}级。'})
+        if saliva >= 7 or dose >= 30.0:
+            new_alerts.append({'Date': current_time_str, 'Type': '👅 黏膜高危', 'Message': f'累计放疗剂量已达{dose}Gy或口干达{saliva}级。'})
+            
+        if new_alerts:
+            alert_df_new = pd.DataFrame(new_alerts)
+            if not df_alerts.empty:
+                df_alerts['Date'] = df_alerts['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            updated_alerts = pd.concat([df_alerts, alert_df_new], ignore_index=True)
+            updated_alerts = updated_alerts.astype(str)
+            conn.update(worksheet="Alerts", data=updated_alerts)
+            
+        # 触发新版 RAG 智能看护指南生成
+        if client is not None:
+            with st.spinner("🚀 正在结合 MASCC / ASCO 最新临床指南生成今日护理报告..."):
+                st.session_state.latest_report = generate_ai_report(report_metrics, weight_loss_pct)
+                st.session_state.just_submitted = True
+        
+        st.success("🎉 数据保存成功！")
+        st.rerun()
+
+    # 显示今日即时看护报告
+    if st.session_state.just_submitted:
+        st.markdown("---")
+        st.subheader("📋 今日定制家属护理报告")
+        st.info(st.session_state.latest_report)
+
+# ----------------------------------------------------------
+# TAB 2: 趋势看板 (CHARTS & TRENDS VISUALIZATION)
+# ----------------------------------------------------------
+with tab2:
+    st.subheader("📊 身体指标趋势变化")
+    
+    if df.empty:
+        st.info("暂无历史数据，请先进行每日打卡。")
+    else:
+        df_sorted = df.sort_values('Date')
+        min_date = df_sorted['Date'].min().date()
+        max_date = df_sorted['Date'].max().date()
+        default_start = max(min_date, max_date - timedelta(days=7))
+        
+        start_date, end_date = st.slider(
+            "📅 选择查看的日期范围:",
+            min_value=min_date, max_value=max_date,
+            value=(default_start, max_date), format="MM月DD日"
+        )
+        
+        filtered_df = df_sorted[
+            (df_sorted['Date'].dt.date >= start_date) & 
+            (df_sorted['Date'].dt.date <= end_date)
+        ].copy()
+        
+        filtered_df = filtered_df.set_index('Date')
+        
+        filtered_df['Weight'] = filtered_df['Weight'].astype(float)
+        filtered_df['Fluids'] = filtered_df['Fluids'].astype(float)
+        filtered_df['Pain'] = filtered_df['Pain'].astype(float)
+        filtered_df['Saliva'] = filtered_df['Saliva'].astype(float)
+        filtered_df['Dose'] = filtered_df['Dose'].astype(float)
+        
+        st.markdown("**跌幅与补水监测：体重 (lbs) 与 饮水量 (mL) 变化**")
+        chart_data1 = filtered_df[['Weight', 'Fluids']]
+        chart_data1.columns = ['体重 (lbs)', '饮水量 (mL)']
+        st.line_chart(chart_data1, use_container_width=True)
+        
+        st.markdown("**症状监控：痛感与口干程度严重分级 (0-10)**")
+        chart_data2 = filtered_df[['Pain', 'Saliva']]
+        chart_data2.columns = ['疼痛级别', '口干级别']
+        st.line_chart(chart_data2, use_container_width=True)
+        
+        st.markdown("**辐射积累：累计放疗总剂量增长曲线 (Gy)**")
+        chart_data3 = filtered_df[['Dose']]
+        chart_data3.columns = ['当前总剂量 (Gy)']
+        st.line_chart(chart_data3, use_container_width=True)
+
+# ----------------------------------------------------------
+# TAB 3: 历史触发警报档案 (AUDITED ALERT HISTORY LOG)
+# ----------------------------------------------------------
+with tab3:
+    st.subheader("🚨 历次触发的智能预警记录")
+    
+    if df_alerts.empty:
+        st.success("✅ 至今为止没有任何异常预警，爸爸指标维持得很好！")
+    else:
+        df_alerts_display = df_alerts.sort_values('Date', ascending=False).copy()
+        df_alerts_display['Date'] = df_alerts_display['Date'].dt.strftime('%m月%d日 %H:%M')
+        df_alerts_display.columns = ['触发时间', '预警类型', '系统生成高危风险护理说明']
+        st.dataframe(df_alerts_display, use_container_width=True, hide_index=True)
