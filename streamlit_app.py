@@ -24,15 +24,6 @@ st.markdown(hide_style, unsafe_allow_html=True)
 
 # 配置 Gemini API 密钥 (Ensure GEMINI_API_KEY is added to your Streamlit Advanced Secrets)
 # --- API KEY 配置验证 ---
-if "GEMINI_API_KEY" in st.secrets:
-    try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    except Exception as e:
-        st.error(f"遭遇接口配置错误: {e}")
-else:
-    st.warning("⚠️ 未检测到 API 密钥，AI 动态报告生成功能暂未启用。请在 Streamlit Secrets 中配置 GEMINI_API_KEY。")
-    # 打印出当前系统能看到的键，帮助排查是不是拼写错误
-    st.write("当前系统内检测到的密钥键名有:", list(st.secrets.keys()))
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except Exception:
@@ -157,9 +148,15 @@ with tab1:
                 weight_loss_pct = ((baseline_weight - float(weight)) / baseline_weight) * 100
 
         # 1. 保存打卡Log数据
+       # 1. 保存打卡Log数据
         new_entry = pd.DataFrame([{
-            'Date': current_time_str, 'Weight': float(weight), 'Fluids': int(fluids),
-            'Dose': float(dose), 'Pain': int(pain), 'Saliva': int(saliva), 'Notes': str(notes)
+            'Date': current_time_str, 
+            'Weight': float(weight), 
+            'Fluids': int(fluids),
+            'Dose': float(dose), 
+            'Pain': int(pain), 
+            'Saliva': int(saliva), 
+            'Notes': str(notes)
         }])
         
         # 复制一份当前输入的数据字典作为报告入参
@@ -167,8 +164,14 @@ with tab1:
         
         if not df.empty:
             df['Date'] = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
         updated_df = pd.concat([df, new_entry], ignore_index=True)
-        conn.update(worksheet="Log", data=updated_df)
+        
+        # --- 修复代码核心：清理格式确保兼容性 ---
+        updated_df = updated_df.astype(str) # 将所有内容转换为干净的字符串格式写入，避免格式冲突
+        
+        # 写入 Google Sheets (明确指定 clear=True 避免行冲突)
+        conn.update(worksheet="Log", data=updated_df, clear=True)
         
         # 2. 传统静态警报审计与存储 (存入 Alerts 标签页)
         new_alerts = []
@@ -184,9 +187,13 @@ with tab1:
         if new_alerts:
             alert_df_new = pd.DataFrame(new_alerts)
             if not df_alerts.empty:
-                df_alerts['Date'] = df_alerts_display = df_alerts['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                df_alerts['Date'] = df_alerts['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
             updated_alerts = pd.concat([df_alerts, alert_df_new], ignore_index=True)
-            conn.update(worksheet="Alerts", data=updated_alerts)
+            
+            # --- 修复代码核心：转换格式 ---
+            updated_alerts = updated_alerts.astype(str)
+            
+            conn.update(worksheet="Alerts", data=updated_alerts, clear=True)
             
         # 3. 触发 AI 深度报告生成并缓存到会话状态中
         with st.spinner("🚀 正在结合 MASCC 最新临床指南，为您生成独家定制护理报告..."):
