@@ -145,4 +145,4 @@ with tab1:
         
         st.markdown("---")
         notes = st.text_area("日常备注 (例如：吃了什么、心情、特殊情况等)")
-        submit = st.form_submit_
+        submit = st.form_submit_button("💾 保存并生成今日报告", use_container_width=True)
