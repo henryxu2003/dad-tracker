@@ -105,7 +105,7 @@ def generate_ai_report(latest_metrics, weight_loss_pct):
     try:
         # 换用新版 SDK 联网搜索生成语法
         response = client.models.generate_content(
-            model='gemini-1.5-flash-002',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())] # 开启谷歌官方实时医学检索功能
