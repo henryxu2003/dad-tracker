@@ -23,6 +23,16 @@ hide_style = """
 st.markdown(hide_style, unsafe_allow_html=True)
 
 # 配置 Gemini API 密钥 (Ensure GEMINI_API_KEY is added to your Streamlit Advanced Secrets)
+# --- API KEY 配置验证 ---
+if "GEMINI_API_KEY" in st.secrets:
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    except Exception as e:
+        st.error(f"遭遇接口配置错误: {e}")
+else:
+    st.warning("⚠️ 未检测到 API 密钥，AI 动态报告生成功能暂未启用。请在 Streamlit Secrets 中配置 GEMINI_API_KEY。")
+    # 打印出当前系统能看到的键，帮助排查是不是拼写错误
+    st.write("当前系统内检测到的密钥键名有:", list(st.secrets.keys()))
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except Exception:
