@@ -233,8 +233,14 @@ with tab2:
         df_sorted = df.sort_values('Date')
         min_date = df_sorted['Date'].min().date()
         max_date = df_sorted['Date'].max().date()
+        
+        # --- 修复核心：如果数据只有1天，强制把滑块下限挪到前一天，防止两值相等闪退 ---
+        if min_date == max_date:
+            min_date = min_date - timedelta(days=1)
+            
         default_start = max(min_date, max_date - timedelta(days=7))
         
+        # 可滑动日期滚轴
         start_date, end_date = st.slider(
             "📅 选择查看的日期范围:",
             min_value=min_date, max_value=max_date,
