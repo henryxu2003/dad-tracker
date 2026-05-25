@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 隐藏Streamlit自带的右上角菜单和底部水印
+# 隐藏Streamlit自带的无用菜单
 hide_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -21,13 +21,10 @@ hide_style = """
 """
 st.markdown(hide_style, unsafe_allow_html=True)
 
-st.title("☀️ 爸爸放疗护理每日登记")
-st.write("请每天填写以下指标，帮助全家随时掌握爸爸的状态并提早应对副作用。")
-
 # 建立与 Google Sheets 的连接
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 读取数据 (设置 0m 缓存，确保全家人在不同手机上能实时看到最新更新)
+# 读取核心打卡数据 (Log 标签页)
 try:
     df = conn.read(worksheet="Log", ttl="0m")
     df = df.dropna(subset=['Date'])
@@ -35,118 +32,162 @@ try:
 except Exception as e:
     df = pd.DataFrame(columns=['Date', 'Weight', 'Fluids', 'Dose', 'Pain', 'Saliva', 'Notes'])
 
-# --- 1. 每日打卡表单 (DAILY LOG FORM) ---
-with st.form(key="log_form", clear_on_submit=True):
-    st.subheader("📝 今日数据登记")
+# 读取历史预警数据 (Alerts 标签页)
+try:
+    df_alerts = conn.read(worksheet="Alerts", ttl="0m")
+    df_alerts = df_alerts.dropna(subset=['Date'])
+    df_alerts['Date'] = pd.to_datetime(df_alerts['Date'])
+except Exception as e:
+    df_alerts = pd.DataFrame(columns=['Date', 'Type', 'Message'])
+
+# --- 页面导航标签 (TAB NAVIGATION FOR MOBILE) ---
+tab1, tab2, tab3 = st.tabs(["📝 今日打卡", "📊 趋势看板", "🚨 预警记录"])
+
+# ==========================================
+# TAB 1: 每日数据登记表单
+# ==========================================
+with tab1:
+    st.subheader("☀️ 爸爸放疗护理每日登记")
+    with st.form(key="log_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            last_weight = float(df['Weight'].iloc[-1]) if not df.empty else 150.0
+            weight = st.number_input("体重 (lbs)", min_value=0.0, step=0.1, value=last_weight)
+        with col2:
+            fluids = st.number_input("今日饮水量 (mL)", min_value=0, step=50, value=2000)
+        with col3:
+            last_dose = float(df['Dose'].iloc[-1]) if not df.empty else 0.0
+            dose = st.number_input(
+                "累计放疗剂量 (Gy)", 
+                min_value=0.0, 
+                step=2.0, 
+                value=last_dose,
+                help="每次放疗后，请把医生当天给的放疗剂量叠加到昨天的数字上（通常每次增加约 2.0 Gy）。"
+            )
+            
+        st.markdown("---")
+        st.markdown("**症状严重程度分级 (0 = 无症状, 10 = 极度严重)**")
+        pain = st.slider("口腔/咽喉疼痛感", 0, 10, 0)
+        saliva = st.slider("唾液黏稠度 / 口干程度", 0, 10, 0)
+        
+        st.markdown("---")
+        notes = st.text_area("日常备注 (例如：吃了什么、心情等)")
+        submit = st.form_submit_button("💾 保存并分享给家人", use_container_width=True)
+
+    # 处理提交逻辑与智能预警触发
+    if submit:
+        current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 1. 保存打卡Log数据
+        new_entry = pd.DataFrame([{
+            'Date': current_time_str, 'Weight': float(weight), 'Fluids': int(fluids),
+            'Dose': float(dose), 'Pain': int(pain), 'Saliva': int(saliva), 'Notes': str(notes)
+        }])
+        if not df.empty:
+            df['Date'] = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        updated_df = pd.concat([df, new_entry], ignore_index=True)
+        conn.update(worksheet="Log", data=updated_df)
+        
+        # 2. 实时运算预警逻辑并保存触发的警报
+        new_alerts = []
+        
+        # 计算7天体重变化
+        if not df.empty:
+            df_temp = pd.concat([df, new_entry], ignore_index=True)
+            df_temp['Date'] = pd.to_datetime(df_temp['Date'])
+            one_week_ago = datetime.now() - timedelta(days=7)
+            past_entries = df_temp[df_temp['Date'] <= one_week_ago]
+            if not past_entries.empty:
+                baseline_weight = float(past_entries['Weight'].iloc[-1])
+                weight_loss_pct = ((baseline_weight - float(weight)) / baseline_weight) * 100
+                if weight_loss_pct >= 2.0:
+                    new_alerts.append({'Date': current_time_str, 'Type': '🚨 体重危机', 'Message': f'体重周下滑{weight_loss_pct:.1f}%，请增加高热量流食并联系营养科。'})
+        
+        if fluids < 1500:
+            new_alerts.append({'Date': current_time_str, 'Type': '💧 饮水不足', 'Message': f'饮水量仅{fluids}mL，未达1500mL安全线，存在脱水及黏膜恶化风险。'})
+        if pain >= 7:
+            new_alerts.append({'Date': current_time_str, 'Type': '🛑 重度疼痛', 'Message': f'咽喉疼痛达到{pain}级。进食前30分钟请务必使用止痛漱口水。'})
+        if saliva >= 7 or dose >= 30.0:
+            new_alerts.append({'Date': current_time_str, 'Type': '👅 黏膜高危', 'Message': f'累计剂量{dose}Gy或口干达{saliva}级。督促每日苏打水漱口4-6次并开加湿器。'})
+            
+        if new_alerts:
+            alert_df_new = pd.DataFrame(new_alerts)
+            if not df_alerts.empty:
+                df_alerts['Date'] = df_alerts['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            updated_alerts = pd.concat([df_alerts, alert_df_new], ignore_index=True)
+            conn.update(worksheet="Alerts", data=updated_alerts)
+            
+        st.success("🎉 数据保存成功！")
+        st.rerun()
+
+# ==========================================
+# TAB 2: 趋势看板 (CHARTS & TRENDS)
+# ==========================================
+with tab2:
+    st.subheader("📊 身体指标趋势变化")
     
-    # 移动端优化：在一行内紧凑显示核心数字输入
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        # 默认体重单位统一为 lbs
-        last_weight = float(df['Weight'].iloc[-1]) if not df.empty else 150.0
-        weight = st.number_input("体重 (lbs)", min_value=0.0, step=0.1, value=last_weight)
-    with col2:
-        fluids = st.number_input("今日饮水量 (mL)", min_value=0, step=50, value=2000)
-    with col3:
-        last_dose = float(df['Dose'].iloc[-1]) if not df.empty else 0.0
-        # 添加带问号的悬停提示 (help 参数会自动在手机端右侧生成一个带问号的提示图标)
-        dose = st.number_input(
-            "累计放疗剂量 (Gy)", 
-            min_value=0.0, 
-            step=2.0, 
-            value=last_dose,
-            help="累计放疗剂量（单位：格雷 Gy）。每次放疗后，请把医生当天给的放疗剂量叠加到昨天的数字上（通常每次增加约 2.0 Gy）。"
+    if df.empty:
+        st.info("暂无历史数据，请先进行每日打卡。")
+    else:
+        df_sorted = df.sort_values('Date')
+        
+        # 默认日期滑动条范围配置
+        min_date = df_sorted['Date'].min().date()
+        max_date = df_sorted['Date'].max().date()
+        
+        # 默认展示过去 7 天
+        default_start = max(min_date, max_date - timedelta(days=7))
+        
+        # 日期筛选滑动条 (手机端可以拖拽自由缩放或滚动查看历史)
+        start_date, end_date = st.slider(
+            "📅 选择查看的日期范围:",
+            min_value=min_date,
+            max_value=max_date,
+            value=(default_start, max_date),
+            format="MM月DD日"
         )
         
-    st.markdown("---")
-    st.markdown("**症状严重程度分级 (0 = 无症状, 10 = 极度严重)**")
-    
-    pain = st.slider("口腔/咽喉疼痛感", 0, 10, 0, help="吞咽或静止时的痛感")
-    saliva = st.slider("唾液黏稠度 / 口干程度", 0, 10, 0, help="唾液是否变黏稠、拉丝或完全没有唾液")
-    
-    st.markdown("---")
-    notes = st.text_area("日常备注 (例如：吃了什么、心情、医生交代的注意事项等)")
-    
-    submit = st.form_submit_button("💾 保存并分享给家人", use_container_width=True)
+        # 过滤数据
+        filtered_df = df_sorted[
+            (df_sorted['Date'].dt.date >= start_date) & 
+            (df_sorted['Date'].dt.date <= end_date)
+        ].copy()
+        
+        filtered_df = filtered_df.set_index('Date')
+        
+        # 图表 1: 体重与饮水量趋势
+        st.markdown("**📉 体重 (lbs) 与 饮水量 (mL) 变化**")
+        chart_data1 = filtered_df[['Weight', 'Fluids']]
+        chart_data1.columns = ['体重 (lbs)', '饮水量 (mL)']
+        st.line_chart(chart_data1, use_container_width=True)
+        
+        # 图表 2: 副作用严重程度趋势
+        st.markdown("**📊 痛感与口干严重程度 (0-10)**")
+        chart_data2 = filtered_df[['Pain', 'Saliva']]
+        chart_data2.columns = ['疼痛级别', '口干级别']
+        st.line_chart(chart_data2, use_container_width=True)
+        
+        # 图表 3: 放疗剂量积累累计
+        st.markdown("**⚡ 累计放疗剂量增长曲线 (Gy)**")
+        chart_data3 = filtered_df[['Dose']]
+        chart_data3.columns = ['当前总剂量 (Gy)']
+        st.line_chart(chart_data3, use_container_width=True)
 
-# --- 2. 提交数据处理 (SUBMIT HANDLING) ---
-if submit:
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+# ==========================================
+# TAB 3: 预警历史记录列表 (ALERT HISTORY)
+# ==========================================
+with tab3:
+    st.subheader("🚨 历次触发的智能预警记录")
+    st.write("这里记录了系统根据每日打卡数据自动识别出的所有健康风险提示：")
     
-    new_entry = pd.DataFrame([{
-        'Date': current_time,
-        'Weight': float(weight),
-        'Fluids': int(fluids),
-        'Dose': float(dose),
-        'Pain': int(pain),
-        'Saliva': int(saliva),
-        'Notes': str(notes)
-    }])
-    
-    if not df.empty:
-        df['Date'] = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
-    updated_df = pd.concat([df, new_entry], ignore_index=True)
-    
-    conn.update(worksheet="Log", data=updated_df)
-    st.success("🎉 数据保存成功！正在刷新看护看板...")
-    st.rerun()
-
-# --- 3. 智能预警与护理建议系统 (PREDICTIVE INSIGHTS) ---
-if not df.empty:
-    st.markdown("---")
-    st.subheader("🚨 智能护理提醒")
-    
-    df = df.sort_values('Date')
-    latest = df.iloc[-1]
-    
-    # 计算过去 7 天的体重变化率
-    one_week_ago = datetime.now() - timedelta(days=7)
-    past_entries = df[df['Date'] <= one_week_ago]
-    
-    if not past_entries.empty:
-        baseline_weight = float(past_entries['Weight'].iloc[-1])
-        weight_loss_pct = ((baseline_weight - float(latest['Weight'])) / baseline_weight) * 100
+    if df_alerts.empty:
+        st.success("✅ 至今为止没有任何异常预警，爸爸状态保持得很棒！")
     else:
-        weight_loss_pct = 0.0
-
-    alert_triggered = False
-    
-    # 1. 体重预警
-    if weight_loss_pct >= 2.0:
-        st.error(f"⚠️ **体重严重下滑警告：** 爸爸的体重在过去一周内下降了 {weight_loss_pct:.1f}%。请考虑逐步增加高热量流食（如营养奶昔、恩敏舒等），并及时联系医院营养科医生。")
-        alert_triggered = True
+        # 按最新时间倒序排列，方便第一眼看到最近发生的警告
+        df_alerts_display = df_alerts.sort_values('Date', ascending=False).copy()
+        df_alerts_display['Date'] = df_alerts_display['Date'].dt.strftime('%m月%d日 %H:%M')
         
-    # 2. 饮水预警
-    if int(latest['Fluids']) < 1500:
-        st.warning(f"💧 **饮水量不足提醒：** 今日饮水量仅为 {latest['Fluids']}mL（目标至少 2000mL）。水分不足会加重口腔黏膜溃疡。请督促爸爸尝试每小时小口小口地喝水、电解质水或清汤。")
-        alert_triggered = True
+        # 改成美观易读的表格表头展示
+        df_alerts_display.columns = ['触发时间', '预警类型', '护理及应对建议说明']
         
-    # 3. 疼痛预警
-    if int(latest['Pain']) >= 7:
-        st.error("🛑 **重度疼痛警告：** 爸爸反馈咽喉/口腔疼痛严重。请严格遵医嘱，在准备进食前 **30分钟** 使用利多卡因漱口水（如康复新液、重组人表皮生长因子或医院配制的止痛漱口水），帮助他顺利吞咽。")
-        alert_triggered = True
-        
-    # 4. 放疗剂量累计与口腔黏膜预警
-    if int(latest['Saliva']) >= 7 or float(latest['Dose']) >= 30.0:
-        st.info("👅 **黏膜炎与口干高发期提示：** 累计放疗剂量已达高危期，或唾液已显著变稠。请务必监督爸爸坚持每天使用小苏打水/淡盐水含漱 4-6 次。同时在爸爸卧室里整晚开启空气加湿器，缓解夜间口干。")
-        alert_triggered = True
-
-    # 5. 状态良好提示
-    if not alert_triggered:
-        st.success("✅ 目前各项监测指标均在安全基线范围内，请继续保持细致看护！")
-
-# --- 4. 历史记录预览 (HISTORY PREVIEW) ---
-if not df.empty:
-    st.markdown("---")
-    st.subheader("📊 近期打卡历史")
-    
-    display_df = df.copy()
-    display_df['Date'] = display_df['Date'].dt.strftime('%m月%d日')
-    
-    # 手机端只显示核心几列，避免横向滚动条太长
-    mobile_display = display_df[['Date', 'Weight', 'Fluids', 'Dose', 'Pain', 'Saliva']].tail(7)
-    
-    # 将表格表头改为中文并将体重单位标注为 lbs
-    mobile_display.columns = ['日期', '体重(lbs)', '饮水(mL)', '累计剂量(Gy)', '痛感', '口干']
-    
-    st.dataframe(mobile_display, use_container_width=True, hide_index=True)
+        st.dataframe(df_alerts_display, use_container_width=True, hide_index=True)
