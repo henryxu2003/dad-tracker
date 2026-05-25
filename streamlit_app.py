@@ -113,7 +113,7 @@ def generate_ai_report(latest_metrics, weight_loss_pct):
         )
         return response.text
     except Exception as e:
-        return f"🚨 今日基础数据已成功保存。但由于远程医学指南数据库连接超时，动态AI预测暂不可用。请参照趋势看板和医院下发的纸质医嘱核对指标。"
+        return f"🚨 调试模式显性错误捕捉: {str(e)}"
 
 # ==========================================================
 # 5. 页面多标签页导航 (APP TABS FOR PHONE SCREENS)
@@ -154,7 +154,7 @@ with tab1:
         
         st.markdown("---")
         notes = st.text_area("日常备注 (例如：吃了什么、心情、特殊情况等)")
-        submit = st.form_submit_button("💾 保存并生成今日报告", use_container_width=True)
+        submit = st.form_submit_button("💾 保存并生成今日报告", width='stretch')
 
     if submit:
         current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -263,17 +263,17 @@ with tab2:
         st.markdown("**跌幅与补水监测：体重 (lbs) 与 饮水量 (mL) 变化**")
         chart_data1 = filtered_df[['Weight', 'Fluids']]
         chart_data1.columns = ['体重 (lbs)', '饮水量 (mL)']
-        st.line_chart(chart_data1, use_container_width=True)
+        st.line_chart(chart_data1)
         
         st.markdown("**症状监控：痛感与口干程度严重分级 (0-10)**")
         chart_data2 = filtered_df[['Pain', 'Saliva']]
         chart_data2.columns = ['疼痛级别', '口干级别']
-        st.line_chart(chart_data2, use_container_width=True)
+        st.line_chart(chart_data2)
         
         st.markdown("**辐射积累：累计放疗总剂量增长曲线 (Gy)**")
         chart_data3 = filtered_df[['Dose']]
         chart_data3.columns = ['当前总剂量 (Gy)']
-        st.line_chart(chart_data3, use_container_width=True)
+        st.line_chart(chart_data3)
 
 # ----------------------------------------------------------
 # TAB 3: 历史触发警报档案 (AUDITED ALERT HISTORY LOG)
@@ -287,4 +287,4 @@ with tab3:
         df_alerts_display = df_alerts.sort_values('Date', ascending=False).copy()
         df_alerts_display['Date'] = df_alerts_display['Date'].dt.strftime('%m月%d日 %H:%M')
         df_alerts_display.columns = ['触发时间', '预警类型', '系统生成高危风险护理说明']
-        st.dataframe(df_alerts_display, use_container_width=True, hide_index=True)
+        st.dataframe(df_alerts_display, width='stretch', hide_index=True)
